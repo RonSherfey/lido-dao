@@ -81,6 +81,8 @@ contract LidoOracle is ILidoOracle, AragonApp {
     bytes32 internal constant MIN_REPORTABLE_EPOCH_ID_POSITION = keccak256("lido.LidoOracle.minReportableEpochId");
     /// @dev the max id of reported epochs
     bytes32 internal constant MAX_REPORTED_EPOCH_ID_POSITION = keccak256("lido.LidoOracle.maxReportedEpochId");
+    /// @dev storage for the last completed report and its time
+    bytes32 internal constant LAST_COMPLETED_REPORT = keccak256("lido.LidoOracle.lastCompletedReport");
     /// @dev storage for all gathered from reports data
     mapping(uint256 => EpochData) private gatheredEpochData;
 
@@ -329,6 +331,20 @@ contract LidoOracle is ILidoOracle, AragonApp {
     }
 
     /**
+     * @notice Reports beacon balance and its change
+     */
+    function getLastCompletedReport()
+        public view
+        returns (
+            uint128 lastBeaconBalance,
+            uint256 timeElapsed
+        )
+    {
+        uint256 lastCompletedReportRaw = LAST_COMPLETED_REPORT.getStorageUint256();
+        return (uint128(lastCompletedReportRaw), uint128(_getTime() - (lastCompletedReportRaw >> 128)));
+    }
+
+    /**
      * @dev Sets beacon spec
      */
     function _setBeaconSpec(
@@ -416,6 +432,8 @@ contract LidoOracle is ILidoOracle, AragonApp {
             .mul(beaconSpec.epochsPerFrame);
         MIN_REPORTABLE_EPOCH_ID_POSITION.setStorageUint256(minReportableEpochId);
         emit MinReportableEpochIdUpdated(minReportableEpochId);
+
+        LAST_COMPLETED_REPORT.setStorageUint256(_getTime() << 128 | modeReport.beaconBalance);
         emit Completed(_epochId, modeReport.beaconBalance, modeReport.beaconValidators);
 
         ILido lido = getLido();

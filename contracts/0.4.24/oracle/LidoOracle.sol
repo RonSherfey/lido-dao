@@ -82,7 +82,7 @@ contract LidoOracle is ILidoOracle, AragonApp {
     /// @dev the max id of reported epochs
     bytes32 internal constant MAX_REPORTED_EPOCH_ID_POSITION = keccak256("lido.LidoOracle.maxReportedEpochId");
     /// @dev storage for the last completed report and its time
-    bytes32 internal constant LAST_COMPLETED_REPORT = keccak256("lido.LidoOracle.lastCompletedReport");
+    bytes32 internal constant LAST_COMPLETED_REPORT = keccak256("lido.LidoOracle.lastCompletedReport");  // why do we need storage? why not just store `Report public lastReport;` attribute?
     /// @dev storage for all gathered from reports data
     mapping(uint256 => EpochData) private gatheredEpochData;
 
@@ -104,6 +104,13 @@ contract LidoOracle is ILidoOracle, AragonApp {
     */
     uint128 public constant ALLOWED_BEACON_BALANCE_DECREASE = 10000;  // PPM
     uint256 public constant DAY = 60 * 60 * 24;
+    /*
+    Based on this analytics https://etherscan.io/address/0xae7ab96520de3a18e5e111b5eaab095312d7fe84#analytics
+    The max number of daily deposited validators is about 2000 ETH (19 Dec)
+    Divide it by DEPOSIT_SIZE and get the number of daily activated validators 2000 / 32 = 62.5
+    And we leave 50-percent buffer for possible short-time bursts ~= 100
+    */
+    uint128 public constant ALLOWED_BEACON_VALIDATORS_DAILY_INCREASE = 100;  // validators
 
     function initialize(
         address _lido,
@@ -223,7 +230,7 @@ contract LidoOracle is ILidoOracle, AragonApp {
 
         uint256 i = 0;
         Report memory report = Report(_beaconBalance, _beaconValidators);
-        require(reportSanityChecks(report), "invalid report sanity checks");
+        reportSanityChecks(report);  // rollback on boundaries violation
         uint256 reportRaw = reportToUint256(report);
         while (i < epochData.kinds.length && reportToUint256(epochData.kinds[i].report) != reportRaw) ++i;
         if (i < epochData.kinds.length) {
@@ -236,15 +243,18 @@ contract LidoOracle is ILidoOracle, AragonApp {
         _tryPush(_epochId);
     }
 
-    function reportSanityChecks(Report report) private returns(bool) {
+    function reportSanityChecks(Report report) private {
         (uint128 lastBeaconBalance,uint256 timeElapsed) = getLastCompletedReport();
-        // todo: use safeMath
-        uint128 beacon_balance_upper_boundary = lastBeaconBalance + timeElapsed * lastBeaconBalance * ALLOWED_BEACON_BALANCE_INCREASE / DAY / 1e6;
-        uint128 beacon_balance_lower_boundary = lastBeaconBalance - timeElapsed * lastBeaconBalance * ALLOWED_BEACON_BALANCE_DECREASE / DAY / 1e6;
+        // todo: use safeMath everywhere
+        uint128 beaconBalanceUpperBoundary = lastBeaconBalance + timeElapsed * lastBeaconBalance * ALLOWED_BEACON_BALANCE_INCREASE / DAY / 1e6;
+        uint128 beaconBalanceLowerBoundary = lastBeaconBalance - timeElapsed * lastBeaconBalance * ALLOWED_BEACON_BALANCE_DECREASE / DAY / 1e6;
 
-        if (report.beaconBalance > beacon_balance_upper_boundary) return false;
-        if (report.beaconBalance < beacon_balance_lower_boundary) return false;
-        return true;
+        require(report.beaconBalance > beaconBalanceUpperBoundary, "BALANCE_UPPER_BOUNDARY");
+        require(report.beaconBalance < beaconBalanceLowerBoundary, "BALANCE_LOWER_BOUNDARY");
+
+        // lastBeaconValidators = ...   TODO
+        // uint128 validatorsUpperBoundary = lastBeaconValidators + timeElapsed * ALLOWED_BEACON_VALIDATORS_DAILY_INCREASE / DAY;
+        // require(report.beaconValidators > validatorsUpperBoundary, "VALIDATORS_UPPER_BOUNDARY");
     }
 
     /**
@@ -372,7 +382,10 @@ contract LidoOracle is ILidoOracle, AragonApp {
         )
     {
         uint256 lastCompletedReportRaw = LAST_COMPLETED_REPORT.getStorageUint256();
-        return (uint128(lastCompletedReportRaw), uint128(_getTime() - (lastCompletedReportRaw >> 128)));
+        return (
+            uint128(lastCompletedReportRaw),
+            uint128(_getTime() - (lastCompletedReportRaw >> 128))
+        );
     }
 
     /**
@@ -464,7 +477,7 @@ contract LidoOracle is ILidoOracle, AragonApp {
         MIN_REPORTABLE_EPOCH_ID_POSITION.setStorageUint256(minReportableEpochId);
         emit MinReportableEpochIdUpdated(minReportableEpochId);
 
-        LAST_COMPLETED_REPORT.setStorageUint256(_getTime() << 128 | modeReport.beaconBalance);
+        LAST_COMPLETED_REPORT.setStorageUint256(_getTime() << 128 | modeReport.beaconBalance);  // fixme: I need modeReport.beaconValidators also!
         emit Completed(_epochId, modeReport.beaconBalance, modeReport.beaconValidators);
 
         ILido lido = getLido();

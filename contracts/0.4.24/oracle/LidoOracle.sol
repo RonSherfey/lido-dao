@@ -204,6 +204,7 @@ contract LidoOracle is ILidoOracle, AragonApp {
 
         uint256 i = 0;
         Report memory report = Report(_beaconBalance, _beaconValidators);
+        require(reportSanityChecks(report), "invalid report sanity checks");
         uint256 reportRaw = reportToUint256(report);
         while (i < epochData.kinds.length && reportToUint256(epochData.kinds[i].report) != reportRaw) ++i;
         if (i < epochData.kinds.length) {
@@ -214,6 +215,13 @@ contract LidoOracle is ILidoOracle, AragonApp {
         emit BeaconReported(_epochId, _beaconBalance, _beaconValidators, member);
 
         _tryPush(_epochId);
+    }
+
+    function reportSanityChecks(Report report) private returns(bool) {
+        (uint128 lastBeaconBalance,uint256 timeElapsed) = getLastCompletedReport();
+        if (report.beaconBalance > 100 * lastBeaconBalance) return false;
+        if (report.beaconBalance < lastBeaconBalance / 100) return false;
+        return true;
     }
 
     /**

@@ -86,6 +86,25 @@ contract LidoOracle is ILidoOracle, AragonApp {
     /// @dev storage for all gathered from reports data
     mapping(uint256 => EpochData) private gatheredEpochData;
 
+    /*
+    If we use APR as a basic reference for increase, and expected range is between 1 and 10% APR.
+    So the granularity step for yearly APR is 1%
+    daily_granularity = 0.01 / 365 = 2.74e-05
+    Currently used basisPoints (1e-4) is unable to express such microscopic ratio.
+    So we should take another popular metric to express this - PPM or 1e-6
+    daily_granularity_in_ppm = 2.74e-05 / 1e-6 = 27 (pretty good)
+    with 100% buffer for future spikes it will be 50
+    */
+    uint128 public constant ALLOWED_BEACON_BALANCE_INCREASE = 50;  // PPM
+
+    /*
+    When slashing happens, the balance may decrease at a much faster pace.
+    On the start the system will have about 100 validators and we can guess one of them can be slashed for any reason.
+    1/100 = 10000 PPM
+    */
+    uint128 public constant ALLOWED_BEACON_BALANCE_DECREASE = 10000;  // PPM
+    uint256 public constant DAY = 60 * 60 * 24;
+
     function initialize(
         address _lido,
         uint64 _epochsPerFrame,
@@ -219,8 +238,12 @@ contract LidoOracle is ILidoOracle, AragonApp {
 
     function reportSanityChecks(Report report) private returns(bool) {
         (uint128 lastBeaconBalance,uint256 timeElapsed) = getLastCompletedReport();
-        if (report.beaconBalance > 100 * lastBeaconBalance) return false;
-        if (report.beaconBalance < lastBeaconBalance / 100) return false;
+        // todo: use safeMath
+        uint128 beacon_balance_upper_boundary = lastBeaconBalance + timeElapsed * lastBeaconBalance * ALLOWED_BEACON_BALANCE_INCREASE / DAY / 1e6;
+        uint128 beacon_balance_lower_boundary = lastBeaconBalance - timeElapsed * lastBeaconBalance * ALLOWED_BEACON_BALANCE_DECREASE / DAY / 1e6;
+
+        if (report.beaconBalance > beacon_balance_upper_boundary) return false;
+        if (report.beaconBalance < beacon_balance_lower_boundary) return false;
         return true;
     }
 

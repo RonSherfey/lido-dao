@@ -11,6 +11,7 @@ import "@aragon/os/contracts/lib/math/SafeMath64.sol";
 
 import "../interfaces/ILidoOracle.sol";
 import "../interfaces/ILido.sol";
+import "../interfaces/ISTETH.sol";
 
 import "./BitOps.sol";
 
@@ -83,6 +84,7 @@ contract LidoOracle is ILidoOracle, AragonApp {
     bytes32 internal constant MAX_REPORTED_EPOCH_ID_POSITION = keccak256("lido.LidoOracle.maxReportedEpochId");
     /// @dev storage for the last completed report and its time
     bytes32 internal constant LAST_COMPLETED_REPORT = keccak256("lido.LidoOracle.lastCompletedReport");
+    bytes32 internal constant LAST_COMPLETED_REPORT_TIME = keccak256("lido.LidoOracle.lastCompletedReportTime");
     /// @dev storage for all gathered from reports data
     mapping(uint256 => EpochData) private gatheredEpochData;
 
@@ -336,12 +338,17 @@ contract LidoOracle is ILidoOracle, AragonApp {
     function getLastCompletedReport()
         public view
         returns (
-            uint128 lastBeaconBalance,
+            uint256 lastCompletedTotalPooledEther,
+            uint256 curTotalPooledEther,
             uint256 timeElapsed
         )
     {
-        uint256 lastCompletedReportRaw = LAST_COMPLETED_REPORT.getStorageUint256();
-        return (uint128(lastCompletedReportRaw), uint128(_getTime() - (lastCompletedReportRaw >> 128)));
+        ILido lido = getLido();
+        if (address(0) != address(lido)) {
+            lastCompletedTotalPooledEther = LAST_COMPLETED_REPORT.getStorageUint256();
+            curTotalPooledEther = ISTETH(lido).totalSupply();
+            timeElapsed = _getTime() - LAST_COMPLETED_REPORT_TIME.getStorageUint256();
+        }
     }
 
     /**
@@ -432,13 +439,14 @@ contract LidoOracle is ILidoOracle, AragonApp {
             .mul(beaconSpec.epochsPerFrame);
         MIN_REPORTABLE_EPOCH_ID_POSITION.setStorageUint256(minReportableEpochId);
         emit MinReportableEpochIdUpdated(minReportableEpochId);
-
-        LAST_COMPLETED_REPORT.setStorageUint256(_getTime() << 128 | modeReport.beaconBalance);
         emit Completed(_epochId, modeReport.beaconBalance, modeReport.beaconValidators);
 
         ILido lido = getLido();
-        if (address(0) != address(lido))
+        if (address(0) != address(lido)) {
             lido.pushBeacon(modeReport.beaconValidators, modeReport.beaconBalance);
+            LAST_COMPLETED_REPORT.setStorageUint256(ISTETH(lido).totalSupply()); // = _getTotalPooledEther
+            LAST_COMPLETED_REPORT_TIME.setStorageUint256(_getTime());
+        }
         delete gatheredEpochData[_epochId];
         return true;
     }

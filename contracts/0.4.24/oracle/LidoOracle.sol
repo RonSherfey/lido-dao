@@ -249,6 +249,11 @@ contract LidoOracle is ILidoOracle, AragonApp {
         uint128 beaconBalanceUpperBoundary = lastBeaconBalance + timeElapsed * lastBeaconBalance * ALLOWED_BEACON_BALANCE_INCREASE / DAY / 1e6;
         uint128 beaconBalanceLowerBoundary = lastBeaconBalance - timeElapsed * lastBeaconBalance * ALLOWED_BEACON_BALANCE_DECREASE / DAY / 1e6;
 
+        // the above logic is quite complicated and PPM monitoring is not a instant thing
+        // if we satisfied with rough solution it can be just
+        // to discuss: beaconBalanceUpperBoundary = lastBeaconBalance * 3
+        // to discuss: beaconBalanceLowerBoundary = lastBeaconBalance / 3
+
         require(report.beaconBalance > beaconBalanceUpperBoundary, "BALANCE_UPPER_BOUNDARY");
         require(report.beaconBalance < beaconBalanceLowerBoundary, "BALANCE_LOWER_BOUNDARY");
 

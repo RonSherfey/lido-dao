@@ -245,11 +245,6 @@ contract('LidoOracle', ([appManager, voting, user1, user2, user3, user4, nobody]
         const receipt = await app.reportBeacon(0, 32, 1, { from: user1 })
         assertEvent(receipt, 'Completed', { expectedArgs: { epochId: 0, beaconBalance: 32, beaconValidators: 1 } })
         await assertReportableEpochs(1, 0)
-
-        await app.setTime(1606824000 + 42)
-        const lastCompletedReport = await app.getLastCompletedReport()
-        assertBn(lastCompletedReport.lastBeaconBalance, 32)
-        assertBn(lastCompletedReport.timeElapsed, 42)
       })
 
       it('reverts when trying to report this epoch again', async () => {

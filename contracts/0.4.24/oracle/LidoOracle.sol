@@ -61,6 +61,7 @@ contract LidoOracle is ILidoOracle, AragonApp {
     bytes32 constant public MANAGE_MEMBERS = keccak256("MANAGE_MEMBERS");
     bytes32 constant public MANAGE_QUORUM = keccak256("MANAGE_QUORUM");
     bytes32 constant public SET_BEACON_SPEC = keccak256("SET_BEACON_SPEC");
+    bytes32 constant public SET_REPORT_LIMITS = keccak256("SET_REPORT_LIMITS");  // to discuss: maybe rename
 
     /// @dev Maximum number of oracle committee members
     uint256 public constant MAX_MEMBERS = 256;
@@ -83,8 +84,9 @@ contract LidoOracle is ILidoOracle, AragonApp {
     /// @dev the max id of reported epochs
     bytes32 internal constant MAX_REPORTED_EPOCH_ID_POSITION = keccak256("lido.LidoOracle.maxReportedEpochId");
     /// @dev storage for the last completed report and its time
-    bytes32 internal constant LAST_COMPLETED_REPORT = keccak256("lido.LidoOracle.lastCompletedReport");
+    bytes32 internal constant LAST_COMPLETED_REPORT_TOTAL_SUPPLY = keccak256("lido.LidoOracle.lastCompletedReportTotalSupply");
     bytes32 internal constant LAST_COMPLETED_REPORT_TIME = keccak256("lido.LidoOracle.lastCompletedReportTime");
+    bytes32 internal constant LAST_COMPLETED_REPORT_VALIDATORS = keccak256("lido.LidoOracle.lastCompletedReportValidators");
     /// @dev storage for all gathered from reports data
     mapping(uint256 => EpochData) private gatheredEpochData;
 
@@ -96,15 +98,19 @@ contract LidoOracle is ILidoOracle, AragonApp {
     So we should take another popular metric to express this - PPM or 1e-6
     daily_granularity_in_ppm = 2.74e-05 / 1e-6 = 27 (pretty good)
     with 100% buffer for future spikes it will be 50
+
+    may be changed by Gov
     */
-    uint128 public constant ALLOWED_BEACON_BALANCE_INCREASE = 50;  // PPM
+    uint128 public ALLOWED_BEACON_BALANCE_INCREASE = 50;  // PPM
 
     /*
     When slashing happens, the balance may decrease at a much faster pace.
     On the start the system will have about 100 validators and we can guess one of them can be slashed for any reason.
     1/100 = 10000 PPM
+
+    may be changed by Gov
     */
-    uint128 public constant ALLOWED_BEACON_BALANCE_DECREASE = 10000;  // PPM
+    uint128 public ALLOWED_BEACON_BALANCE_DECREASE = 10000;  // PPM
     uint256 public constant DAY = 60 * 60 * 24;
     /*
     Based on this analytics https://etherscan.io/address/0xae7ab96520de3a18e5e111b5eaab095312d7fe84#analytics
@@ -112,7 +118,19 @@ contract LidoOracle is ILidoOracle, AragonApp {
     Divide it by DEPOSIT_SIZE and get the number of daily activated validators 2000 / 32 = 62.5
     And we leave 50-percent buffer for possible short-time bursts ~= 100
     */
-    uint128 public constant ALLOWED_BEACON_VALIDATORS_DAILY_INCREASE = 100;  // validators
+    uint128 public ALLOWED_BEACON_VALIDATORS_DAILY_INCREASE = 100;  // validators
+
+    function set_ALLOWED_BEACON_BALANCE_INCREASE(uint128 _ALLOWED_BEACON_BALANCE_INCREASE) external auth(SET_REPORT_LIMITS) {
+        ALLOWED_BEACON_BALANCE_INCREASE = _ALLOWED_BEACON_BALANCE_INCREASE;  // to discuss: emit event?
+    }
+
+    function set_ALLOWED_BEACON_BALANCE_DECREASE(uint128 _ALLOWED_BEACON_BALANCE_DECREASE) external auth(SET_REPORT_LIMITS) {
+        ALLOWED_BEACON_BALANCE_DECREASE = _ALLOWED_BEACON_BALANCE_DECREASE;  // to discuss: emit event?
+    }
+
+    function set_ALLOWED_BEACON_VALIDATORS_DAILY_INCREASE(uint128 _ALLOWED_BEACON_VALIDATORS_DAILY_INCREASE) external auth(SET_REPORT_LIMITS) {
+        ALLOWED_BEACON_VALIDATORS_DAILY_INCREASE = _ALLOWED_BEACON_VALIDATORS_DAILY_INCREASE;  // to discuss: emit event?
+    }
 
     function initialize(
         address _lido,
@@ -245,23 +263,32 @@ contract LidoOracle is ILidoOracle, AragonApp {
         _tryPush(_epochId);
     }
 
+    /**
+     * @notice To make oracles less dangerous,
+     *  we can bound rewards report by 0.1% increase in stake and 15% decrease in stake,
+     *  with both values configurable by DAO voting in case of extremely unusual circumstances.
+     *  daily_reward_rate_PPM = 1e6 * reward / totalPooledEther / days
+     **/
     function reportSanityChecks(Report report) private {
-        (uint128 lastBeaconBalance,uint256 timeElapsed) = getLastCompletedReport();
+        (uint256 lastTotalPooledEther,
+         uint256 curTotalPooledEther,
+         uint256 lastValidators,
+         uint256 timeElapsed) = getLastCompletedReport();
         // todo: use safeMath everywhere
-        uint128 beaconBalanceUpperBoundary = lastBeaconBalance + timeElapsed * lastBeaconBalance * ALLOWED_BEACON_BALANCE_INCREASE / DAY / 1e6;
-        uint128 beaconBalanceLowerBoundary = lastBeaconBalance - timeElapsed * lastBeaconBalance * ALLOWED_BEACON_BALANCE_DECREASE / DAY / 1e6;
+        if (report.curTotalPooledEther >= lastTotalPooledEther) {  // check profit constraint
+            uint256 reward = curTotalPooledEther - lastTotalPooledEther;
+            uint256 rewardPPM = 1e6 * reward / curTotalPooledEther * DAY / timeElapsed;
+            require(rewardPPM <= ALLOWED_BEACON_BALANCE_INCREASE, "ALLOWED_BEACON_BALANCE_INCREASE");
+        } else {  // check loss constraint (???)
+            uint256 loss = lastTotalPooledEther - curTotalPooledEther;
+            uint256 lossPPM = 1e6 * loss / curTotalPooledEther * DAY / timeElapsed;
+            require(lossPPM <= ALLOWED_BEACON_BALANCE_DECREASE, "ALLOWED_BEACON_BALANCE_DECREASE");
+        }
 
-        // the above logic is quite complicated and PPM monitoring is not a instant thing
-        // if we satisfied with rough solution it can be just
-        // to discuss: beaconBalanceUpperBoundary = lastBeaconBalance * 3
-        // to discuss: beaconBalanceLowerBoundary = lastBeaconBalance / 3
-
-        require(report.beaconBalance > beaconBalanceUpperBoundary, "BALANCE_UPPER_BOUNDARY");
-        require(report.beaconBalance < beaconBalanceLowerBoundary, "BALANCE_LOWER_BOUNDARY");
-
-        // lastBeaconValidators = ...   TODO
-        // uint128 validatorsUpperBoundary = lastBeaconValidators + timeElapsed * ALLOWED_BEACON_VALIDATORS_DAILY_INCREASE / DAY;
-        // require(report.beaconValidators > validatorsUpperBoundary, "VALIDATORS_UPPER_BOUNDARY");
+        if (report.beaconValidators >= lastValidators) {
+            uint256 validatorsDailyIncrease = (report.beaconValidators - lastValidators) * DAY / timeElapsed;
+            require(validatorsDailyIncrease <= ALLOWED_BEACON_VALIDATORS_DAILY_INCREASE, "ALLOWED_BEACON_VALIDATORS_DAILY_INCREASE");
+        }  // to discuss: should I check decrease?
     }
 
     /**
@@ -384,17 +411,18 @@ contract LidoOracle is ILidoOracle, AragonApp {
     function getLastCompletedReport()
         public view
         returns (
-            uint256 lastCompletedTotalPooledEther,
+            uint256 lastTotalPooledEther,
             uint256 curTotalPooledEther,
+            uint256 lastValidators,
             uint256 timeElapsed
         )
     {
         ILido lido = getLido();
-        if (address(0) != address(lido)) {
-            lastCompletedTotalPooledEther = LAST_COMPLETED_REPORT.getStorageUint256();
-            curTotalPooledEther = ISTETH(lido).totalSupply();
-            timeElapsed = _getTime() - LAST_COMPLETED_REPORT_TIME.getStorageUint256();
-        }
+        require(address(lido) != address(0), "LIDO_IS_ZERO");
+        lastTotalPooledEther = LAST_COMPLETED_REPORT_TOTAL_SUPPLY.getStorageUint256();
+        curTotalPooledEther = ISTETH(lido).totalSupply();
+        lastValidators = LAST_COMPLETED_REPORT_VALIDATORS.getStorageUint256();
+        timeElapsed = _getTime() - LAST_COMPLETED_REPORT_TIME.getStorageUint256();
     }
 
     /**
@@ -485,15 +513,14 @@ contract LidoOracle is ILidoOracle, AragonApp {
             .mul(beaconSpec.epochsPerFrame);
         MIN_REPORTABLE_EPOCH_ID_POSITION.setStorageUint256(minReportableEpochId);
         emit MinReportableEpochIdUpdated(minReportableEpochId);
-
-        LAST_COMPLETED_REPORT.setStorageUint256(_getTime() << 128 | modeReport.beaconBalance);  // fixme: I need modeReport.beaconValidators also!
         emit Completed(_epochId, modeReport.beaconBalance, modeReport.beaconValidators);
 
         ILido lido = getLido();
-        if (address(0) != address(lido)) {
+        if (address(0) != address(lido)) {  // to discuss: use require?
             lido.pushBeacon(modeReport.beaconValidators, modeReport.beaconBalance);
-            LAST_COMPLETED_REPORT.setStorageUint256(ISTETH(lido).totalSupply()); // = _getTotalPooledEther
+            LAST_COMPLETED_REPORT_TOTAL_SUPPLY.setStorageUint256(ISTETH(lido).totalSupply()); // = _getTotalPooledEther
             LAST_COMPLETED_REPORT_TIME.setStorageUint256(_getTime());
+            LAST_COMPLETED_REPORT_VALIDATORS.setStorageUint256(modeReport.beaconValidators);
         }
         delete gatheredEpochData[_epochId];
         return true;
